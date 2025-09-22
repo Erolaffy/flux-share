@@ -6,8 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "dev": "ts-node-dev example/server.ts",
-    "start": "node dist/example/server.js"
+    "dev": "ts-node-dev example/server/server.ts",
+    "start": "node dist/example/server/server.js"
   },
   "keywords": [
     "websocket",
