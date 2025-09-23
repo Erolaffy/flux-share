@@ -62,8 +62,9 @@ export type StoredData = StringData | StoredFileData;
  * 房间模式：
  * 'singleton': 房间只保留最新的一条数据，新数据会覆盖旧数据。
  * 'live': 数据是实时的，服务器仅做转发，不保留历史记录。
+ * 'history': [新增] 房间会保留所有历史数据，直到房间关闭。
  */
-export type RoomMode = 'singleton' | 'live';
+export type RoomMode = 'singleton' | 'live' | 'history'; // [修改] 添加 'history' 模式
 
 /**
  * 创建房间时的选项
@@ -117,7 +118,8 @@ interface RoomData {
   capacity: number;
   mode: RoomMode;
   clients: Set<string>; // 存储 socket.id
-  data?: StoredData; // 用于存储数据 (使用统一格式)
+  // [修改] data 可以是单个对象，也可以是对象数组，以支持 history 模式
+  data?: StoredData | StoredData[]; 
 }
 
 const DEFAULT_MAX_PUBLIC_HISTORY = 50;
@@ -127,10 +129,10 @@ const DEFAULT_MAX_FILE_SIZE = 1e8; // 100 MB
  * FluxShareServer 类，用于创建和管理实时数据共享服务。
  */
 export class FluxShareServer {
-  private io: Server;
+  public io: Server;
   private publicHistory: StoredData[] = [];
   private rooms: Map<string, RoomData> = new Map();
-  private deletedFiles: Set<string> = new Set(); // 存储被逻辑删除的文件的 fileId
+  private deletedFiles: Set<string> = new Set();
   private readonly maxPublicHistory: number;
   private readonly uploadDir?: string;
   private readonly maxFileSize: number;
@@ -151,20 +153,16 @@ export class FluxShareServer {
       },
       maxHttpBufferSize: 1e8, // 100 MB
     });
-
-    // 如果提供了 uploadDir，确保目录存在
+    
     if (this.uploadDir) {
       fs.mkdir(this.uploadDir, { recursive: true })
         .catch(err => console.error('Failed to create upload directory:', err));
     }
 
-    // 设置连接校验中间件
     if (options.auth) {
       this.io.use(options.auth);
     } else {
-      // 默认允许所有连接
       this.io.use((socket, next) => {
-        // 在这里可以添加未来的默认校验逻辑
         console.log(`New connection from ${socket.id}, no auth provided.`);
         next();
       });
@@ -176,7 +174,6 @@ export class FluxShareServer {
   
   /**
    * 清理已被逻辑删除的物理文件。
-   * 这是一个开放给模块调用者的函数，可以定期调用或在服务关闭时调用。
    */
   public async cleanupDeletedFiles(): Promise<{ deleted: string[], failed: string[] }> {
     if (!this.uploadDir) {
@@ -193,12 +190,9 @@ export class FluxShareServer {
     for (const fileId of this.deletedFiles) {
       try {
         const filePath = path.join(this.uploadDir, fileId);
-        // 删除系统文件
         await fs.unlink(filePath);
-        // 标记已经删除
         deleted.push(fileId);
       } catch (error: any) {
-        // 如果文件不存在，也算作清理成功
         if (error.code === 'ENOENT') {
           deleted.push(fileId);
         } else {
@@ -208,7 +202,6 @@ export class FluxShareServer {
       }
     }
     
-    // 从集合中移除已成功处理的项
     for (const fileId of deleted) {
       this.deletedFiles.delete(fileId);
     }
@@ -220,21 +213,17 @@ export class FluxShareServer {
 
   /**
    * 处理上传的数据，根据类型进行不同操作
-   * @param data 客户端上传的原始数据
-   * @returns 处理后的可存储/广播的数据，或在出错时返回 null
    */
   private async processUpload(data: TransferData): Promise<StoredData | null> {
     if (data.type === 'string') {
-      return data; // 字符串直接返回
+      return data;
     }
 
     if (data.type === 'file') {
-      // 1. 检查是否配置了上传目录
       if (!this.uploadDir) {
         console.error('File upload failed: uploadDir is not configured.');
         return null;
       }
-      // 2. 校验文件大小
       if (data.content.length > this.maxFileSize) {
         console.error(`File upload failed: File size (${data.content.length} bytes) exceeds the limit of ${this.maxFileSize} bytes.`);
         return null;
@@ -244,10 +233,7 @@ export class FluxShareServer {
       const filePath = path.join(this.uploadDir, fileId);
 
       try {
-        // 3. 保存文件到目录
         await fs.writeFile(filePath, data.content);
-        
-        // 4. 构建要存储和广播的文件信息对象
         const storedFile: StoredFileData = {
           type: 'file',
           fileId: fileId,
@@ -262,7 +248,7 @@ export class FluxShareServer {
       }
     }
 
-    return null; // 未知类型
+    return null;
   }
 
   /**
@@ -280,19 +266,17 @@ export class FluxShareServer {
 
   /**
    * 处理所有与公共流相关的事件
-   * @param socket 客户端 Socket 实例
    */
   private handlePublicFlux(socket: Socket): void {
     socket.emit('public:history', this.publicHistory);
 
     socket.on('public:upload', async (data: TransferData) => {
       const processedData = await this.processUpload(data);
-      if (!processedData) return; // 处理失败则不继续
+      if (!processedData) return;
 
       this.publicHistory.push(processedData);
       if (this.publicHistory.length > this.maxPublicHistory) {
         const removedItem = this.publicHistory.shift();
-        // 如果移除的是文件，进行逻辑删除
         if (removedItem?.type === 'file') {
           this.deletedFiles.add(removedItem.fileId);
         }
@@ -303,7 +287,6 @@ export class FluxShareServer {
     socket.on('public:deleteLast', () => {
       if (this.publicHistory.length > 0) {
         const removedItem = this.publicHistory.pop();
-        // 如果移除的是文件，进行逻辑删除
         if (removedItem?.type === 'file') {
           this.deletedFiles.add(removedItem.fileId);
           console.log(`Logically deleted file: ${removedItem.fileId}`);
@@ -323,7 +306,8 @@ export class FluxShareServer {
       callback(createResult);
     });
 
-    socket.on('room:join', (roomId: string, callback: (response: { success: boolean; message: string; data?: StoredData }) => void) => {
+    socket.on('room:join', (roomId: string, callback: (response: { success: boolean; message: string; data?: StoredData | StoredData[] }) => void) => {
+      console.log(`Client ${socket.id} is trying to join room ${roomId}`);
       const room = this.rooms.get(roomId);
       if (!room) {
         return callback({ success: false, message: 'Room not found.' });
@@ -335,13 +319,37 @@ export class FluxShareServer {
       socket.join(roomId);
       room.clients.add(socket.id);
 
-      let responseData: StoredData | undefined = undefined;
-      if (room.mode === 'singleton' && room.data) {
+      // [修改] 如果是 singleton 或 history 模式且已有数据，则发送给新加入者
+      let responseData: StoredData | StoredData[] | undefined = undefined;
+      if (room.mode === 'singleton' || room.mode === 'history') {
         responseData = room.data;
       }
       
       console.log(`Client ${socket.id} joined room ${roomId}`);
       callback({ success: true, message: `Successfully joined room '${roomId}'.`, data: responseData });
+    });
+
+    // [新增] 监听客户端主动请求历史记录的事件
+    socket.on('room:history', (roomId: string, callback: (response: { success: boolean; message: string; data?: StoredData[] }) => void) => {
+      console.log(`Client ${socket.id} requested history for room ${roomId}`);  
+      const room = this.rooms.get(roomId);
+
+        // 校验：房间是否存在
+        if (!room) {
+            return callback({ success: false, message: 'Room not found.' });
+        }
+        // 校验：客户端是否在该房间内
+        if (!socket.rooms.has(roomId)) {
+            return callback({ success: false, message: 'You are not a member of this room.' });
+        }
+        // 校验：房间是否是 history 模式
+        if (room.mode !== 'history') {
+            return callback({ success: false, message: 'Room is not in history mode.' });
+        }
+
+        // 校验通过，发送历史记录
+        const historyData = Array.isArray(room.data) ? room.data : [];
+        callback({ success: true, message: 'History retrieved successfully.', data: historyData });
     });
 
     socket.on('room:upload', async (payload: { roomId: string; data: TransferData }, callback: (response: { success: boolean; message: string; }) => void) => {
@@ -360,19 +368,39 @@ export class FluxShareServer {
       if (room.mode === 'live') {
         socket.to(roomId).emit('room:data', processedData);
       } else if (room.mode === 'singleton') {
-        // 如果之前的数据是文件，先进行逻辑删除
-        if (room.data?.type === 'file') {
-            this.deletedFiles.add(room.data.fileId);
-            console.log(`Logically deleted file due to overwrite: ${room.data.fileId}`);
+        if (room.data && (room.data as StoredFileData).type === 'file') {
+            this.deletedFiles.add((room.data as StoredFileData).fileId);
+            console.log(`Logically deleted file due to overwrite: ${(room.data as StoredFileData).fileId}`);
         }
         room.data = processedData;
         this.io.to(roomId).emit('room:data', room.data);
+      } else if (room.mode === 'history') { // [新增] history 模式的逻辑
+        if (!Array.isArray(room.data)) {
+          // 安全检查，以防万一
+          room.data = [];
+        }
+        room.data.push(processedData);
+        // 只广播最新的数据给房间内所有人（包括发送者自己）
+        this.io.to(roomId).emit('room:data', processedData);
       }
+
       callback({ success: true, message: 'Data sent successfully.' });
     });
   }
   
-  public createPrivateRooms(options: RoomOptions): { success: boolean,roomId: string, message: string } {
+  /**
+   * @description 创建一个私人房间
+   * @param options 房间选项
+   * @returns 创建结果
+   * ```js
+   * {
+   *  success: boolean,
+   *  roomId: string,
+   *  message: string
+   * }
+   * ```
+   */
+  public createPrivateRooms(options: RoomOptions): { success: boolean, roomId: string, message: string } {
     if (this.rooms.has(options.roomId)) {
       return { success: false,roomId: '' , message: `Room '${options.roomId}' already exists.` };
     }
@@ -381,8 +409,10 @@ export class FluxShareServer {
       capacity: options.capacity,
       mode: options.mode,
       clients: new Set(),
-      data: undefined,
+      // [修改] 根据模式初始化 data
+      data: options.mode === 'history' ? [] : undefined,
     };
+
     this.rooms.set(options.roomId, newRoom);
     console.log(`Room created: ${options.roomId}`);
     return { success: true,roomId: options.roomId, message: `Room '${options.roomId}' created successfully.` }
@@ -398,10 +428,18 @@ export class FluxShareServer {
         room.clients.delete(socket.id);
         console.log(`Client ${socket.id} left room ${room.id}`);
         if (room.clients.size === 0) {
-          // 如果房间空了，并且是 singleton 模式且存有文件，则逻辑删除该文件
-          if (room.mode === 'singleton' && room.data?.type === 'file') {
-            this.deletedFiles.add(room.data.fileId);
-            console.log(`Logically deleted file from empty room ${room.id}: ${room.data.fileId}`);
+          // [修改] 清理逻辑需要处理 history 模式
+          if (room.mode === 'singleton' && room.data && (room.data as StoredFileData).type === 'file') {
+            this.deletedFiles.add((room.data as StoredFileData).fileId);
+            console.log(`Logically deleted file from empty room ${room.id}: ${(room.data as StoredFileData).fileId}`);
+          } else if (room.mode === 'history' && Array.isArray(room.data)) {
+            // [新增] 遍历 history 数组，逻辑删除所有文件
+            for (const item of room.data) {
+              if (item.type === 'file') {
+                this.deletedFiles.add(item.fileId);
+                console.log(`Logically deleted file from empty history room ${room.id}: ${item.fileId}`);
+              }
+            }
           }
           this.rooms.delete(room.id);
           console.log(`Room ${room.id} is empty and has been removed.`);
