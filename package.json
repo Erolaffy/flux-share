@@ -1,7 +1,7 @@
 {
   "name": "flux-share",
   "version": "1.0.0",
-  "description": "A real-time, in-memory data-sharing library for Node.js, featuring public and private channels.",
+  "description": "A real-time, data-sharing library for Node.js, featuring public and private channels.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -9,6 +9,7 @@
     "dev": "ts-node-dev example/server/server.ts",
     "start": "node dist/example/server/server.js"
   },
+  "files": ["dist","README.md"],
   "keywords": [
     "websocket",
     "socket.io",
@@ -17,13 +18,12 @@
     "file-transfer",
     "data-sharing"
   ],
-  "author": "Your Name",
+  "author": "Erolaffy",
   "license": "MIT",
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^20.11.24",
     "express": "^4.18.3",
-    "layui": "^2.11.6",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.3.3"
   },

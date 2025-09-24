@@ -1,152 +1,192 @@
-# Flux-Share
+# FluxShare - Real-Time Data Sharing Library
 
-![NPM Version](https://img.shields.io/npm/v/flux-share?color=blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Flux-Share** 是一个为 Node.js 设计的、基于 WebSocket 的实时数据共享库。它允许你轻松地构建具有公共频道和私人加密房间的应用程序，非常适合在线剪切板、临时文件传输、实时协作等场景。所有数据均存储在内存中，无需数据库，启动即可使用。
+FluxShare is a powerful backend library built on Node.js and Socket.io, designed to effortlessly implement real-time data sharing between clients. It supports both text strings and file transfers and provides a flexible room management system, including three distinct data persistence modes. Whether you're building an online collaboration tool, a real-time chat application, or a temporary file-sharing service, FluxShare provides the core functionality to accelerate your development process.
 
-## 特性
+## ✨ Features
 
--   **公共频道**: 任何连接的客户端都可以访问的全局数据板。
--   **私人房间**: 需要创建和加入，具有用户容量限制。
--   **两种房间模式**:
-    -   `singleton`: 房间只保留最新的一条数据，非常适合状态同步。
-    -   `live`: 数据仅在成员间实时广播，服务器不存储，适合聊天或实时事件流。
--   **内存存储**: 无需配置数据库，快速且轻量。
--   **TypeScript 支持**: 使用 TypeScript 编写，提供完整的类型定义。
--   **易于集成**: 可以轻松附加到任何现有的 Node.js `http.Server`。
--   **大数据支持**: 默认支持最大 100MB 的数据传输，可用于文件分享。
+- **Public Broadcast Space**: A global space where all connected clients can share data. The server retains a configurable number of the most recent history items.
+- **Private Rooms**: Create isolated rooms with specific capacities and modes for grouped communication.
+- **Multiple Room Modes**:
+    - `singleton`: The room only stores the most recent piece of data, with new data overwriting the old.
+    - `live`: A pure real-time mode where data is only forwarded between clients, and the server keeps no records.
+    - `history`: The room records all data sent within it until the room is closed.
+- **File Upload & Management**: Supports file transfers with secure storage in a specified directory. Includes a cleanup mechanism to prevent disk space abuse.
+- **Flexible Configuration**:
+    - Customize the number of public history records.
+    - Configure CORS origins to ensure secure connections.
+    - Set a custom directory for uploads and a maximum file size.
+- **Connection Authentication**: Supports an authentication hook for new connections to enhance security.
+- **Logical Deletion & Cleanup**: Files are logically deleted when overwritten or when a room is closed, and can be physically purged using the `cleanupDeletedFiles` method.
 
-## 安装
+## 🚀 Installation
 
 ```bash
-npm install flux-share socket.io
+npm install flux-share
 ```
 
-## 服务端使用
+## 🎬 Quick Start
 
-将 `FluxShareServer` 附加到一个标准的 Node.js `http.Server` 实例。下面是一个与 Express 结合的例子：
+Here is a basic example of how to set up the server:
 
-```typescript
-// server.ts
-import express from 'express';
+```javascript
 import { createServer } from 'http';
 import { FluxShareServer } from 'flux-share';
 
-const app = express();
-const httpServer = createServer(app);
+// 1. Create a standard Node.js HTTP server
+const httpServer = createServer();
 
-// 实例化 FluxShareServer
+// 2. Configure the FluxShareServer
 const fluxShare = new FluxShareServer(httpServer, {
-  maxPublicHistory: 100, // 可选：设置公共剪切板最大历史记录
+  // Allow connections from any origin
+  origin: '*',
+  // Set the directory for file uploads
+  uploadDir: './uploads',
+  // Keep the last 100 messages in the public space
+  maxPublicHistory: 100,
+  // Set the maximum file size to 50MB
+  maxFileSize: 50 * 1024 * 1024,
+  // (Optional) Add an authentication hook
+  auth: (socket, next) => {
+    console.log('New connection:', socket.id);
+    next();
+  }
 });
 
+// 3. Periodically clean up logically deleted files (e.g., every hour)
+setInterval(() => {
+  console.log('Running scheduled cleanup of deleted files...');
+  fluxShare.cleanupDeletedFiles().then(result => {
+    console.log(`Cleanup complete. Deleted: ${result.deleted.length}, Failed: ${result.failed.length}`);
+  });
+}, 3600 * 1000);
+
+
+// 4. Start the server
 const PORT = process.env.PORT || 3000;
-
 httpServer.listen(PORT, () => {
-  console.log(`🚀 Server is listening on port ${PORT}`);
+  console.log(`✅ Server is running on port ${PORT}`);
 });
 ```
 
-## 客户端 API (使用 `socket.io-client`)
+## 📚 API Documentation
 
-下面是客户端需要了解的所有事件。
+### `new FluxShareServer(server, options)`
 
-### 连接
+Creates a new `FluxShareServer` instance.
 
-```javascript
-import { io } from "socket.io-client";
+- `server`: An instance of Node.js's `http.Server`.
+- `options` (optional): A `FluxShareOptions` configuration object.
+    - `maxPublicHistory` (number): The maximum number of history records to keep for the public stream. Defaults to `50`.
+    - `origin` (string | string[] | boolean): The allowed CORS origin(s). Defaults to `*`.
+    - `uploadDir` (string): The storage directory for file uploads. If not provided, file uploads are disabled.
+    - `maxFileSize` (number): The maximum allowed file size in bytes. Defaults to `100MB`.
+    - `auth` (function): An authentication hook `(socket, next) => void`.
 
-const socket = io("http://localhost:3000");
+### `cleanupDeletedFiles(): Promise<{ deleted: string[], failed: string[] }>`
 
-socket.on("connect", () => {
-  console.log("Connected to Flux-Share server!", socket.id);
-});
-```
+Asynchronously cleans up physically stored files in the `uploadDir` that have been logically deleted. Files are marked for deletion when a room is destroyed or when a file in a `singleton` room is overwritten. Call this method to free up disk space.
 
-### 公共剪切板事件
+---
 
-#### 监听事件
+## 🔌 Client-Side Events
 
--   **`public:history`**: 当你连接成功或数据更新时，服务器会发送此事件，包含了整个公共剪切板的历史记录数组。
-    ```javascript
-    socket.on('public:history', (historyArray) => {
-      console.log('Public history updated:', historyArray);
-      // 更新你的 UI
-    });
-    ```
+You can use the `socket.io-client` library to interact with the FluxShare server.
 
-#### 发送事件
+### Public Space Events
 
--   **`public:upload`**: 上传数据到公共剪切板。数据可以是任何可序列化的类型（字符串、对象、Buffer等）。
-    ```javascript
-    const myData = { text: 'Hello, world!', from: 'client-1' };
-    socket.emit('public:upload', myData);
+- **Receive History**:
+  ```javascript
+  socket.on('public:history', (history) => {
+    // history is an array of StoredData objects
+    console.log('Received public history:', history);
+  });
+  ```
 
-    // 发送文件 (Buffer)
-    // const fileBuffer = ...;
-    // socket.emit('public:upload', fileBuffer);
-    ```
--   **`public:deleteLast`**: 请求服务器删除公共剪切板中的最后一条记录。
-    ```javascript
-    socket.emit('public:deleteLast');
-    ```
+- **Upload Data (String or File)**:
+  ```javascript
+  // Upload a string
+  socket.emit('public:upload', { type: 'string', content: 'Hello, everyone!' });
 
-### 私人房间事件
+  // Upload a file (example in a Node.js client)
+  const fileBuffer = fs.readFileSync('path/to/your/file.png');
+  socket.emit('public:upload', {
+    type: 'file',
+    content: fileBuffer,
+    fileName: 'image.png',
+    mimeType: 'image/png'
+  });
+  ```
 
-#### 发送事件
+- **Delete the Last Record**:
+  ```javascript
+  socket.emit('public:deleteLast');
+  ```
 
--   **`room:create`**: 创建一个新房间。
-    ```javascript
-    const roomOptions = {
-      roomId: 'my-secret-room',
-      capacity: 5,         // 最多5个成员
-      mode: 'singleton'    // 'singleton' 或 'live'
-    };
+### Private Room Events
 
-    socket.emit('room:create', roomOptions, (response) => {
-      if (response.success) {
-        console.log(response.message); // "Room 'my-secret-room' created successfully."
-      } else {
-        console.error(response.message);
+- **Create a Room**:
+  ```javascript
+  const roomOptions = {
+    roomId: 'my-private-room',
+    capacity: 10,
+    mode: 'history' // 'singleton', 'live', or 'history'
+  };
+  socket.emit('room:create', roomOptions, (response) => {
+    if (response.success) {
+      console.log(`Room created with ID: ${response.roomId}`);
+    } else {
+      console.error(`Failed to create room: ${response.message}`);
+    }
+  });
+  ```
+
+- **Join a Room**:
+  ```javascript
+  socket.emit('room:join', 'my-private-room', (response) => {
+    if (response.success) {
+      console.log(response.message);
+      // If the room is in 'singleton' or 'history' mode, response.data will contain the existing data.
+      if (response.data) {
+        console.log('Initial room data:', response.data);
       }
-    });
-    ```
+    } else {
+      console.error(`Failed to join room: ${response.message}`);
+    }
+  });
+  ```
 
--   **`room:join`**: 加入一个已存在的房间。
-    ```javascript
-    const roomId = 'my-secret-room';
-    socket.emit('room:join', roomId, (response) => {
-      if (response.success) {
-        console.log(response.message); // "Successfully joined room 'my-secret-room'."
-        if (response.data) {
-          // 如果是 singleton 模式，这里会收到房间的当前数据
-          console.log('Initial room data:', response.data);
-        }
-      } else {
-        console.error(response.message); // "Room not found." 或 "Room is full."
-      }
-    });
-    ```
--   **`room:upload`**: 在你已加入的房间中上传数据。
-    ```javascript
-    const payload = {
-      roomId: 'my-secret-room',
-      data: 'This is my secret message.'
-    };
-    socket.emit('room:upload', payload);
-    ```
+- **Receive Room Data**:
+  ```javascript
+  socket.on('room:data', (data) => {
+    // data is a StoredData object
+    console.log('Received data from room:', data);
+  });
+  ```
 
-#### 监听事件
+- **Upload Data to a Room**:
+  ```javascript
+  const payload = {
+    roomId: 'my-private-room',
+    data: {
+      type: 'string',
+      content: 'This is a message for the room.'
+    }
+  };
+  socket.emit('room:upload', payload, (response) => {
+    if (response.success) {
+      console.log('Data sent successfully.');
+    } else {
+      console.error(`Failed to send data: ${response.message}`);
+    }
+  });
+  ```
 
--   **`room:data`**: 监听来自你所在房间的数据更新。
-    ```javascript
-    socket.on('room:data', (data) => {
-      console.log('Received new data from room:', data);
-      // 更新你的 UI
-    });
-    ```
+## 🤝 Contributing
 
-## 许可证
+Contributions, issues, and feature requests are welcome! Feel free to check the issues page.
 
-[MIT](./LICENSE)
+## 📄 License
+
+This project is licensed under the [MIT](https://opensource.org/licenses/MIT) License.
